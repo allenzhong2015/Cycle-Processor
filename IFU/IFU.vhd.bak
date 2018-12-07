@@ -1,0 +1,176 @@
+library ieee;
+use ieee.std_logic_1164.all;
+
+entity IFU is
+  generic (mem_file: string);
+  port(
+    clk	 : in std_logic;
+    rst	 : in std_logic;
+    immed : in std_logic_vector(15 downto 0);
+    branch: in std_logic_vector(2 downto 0);
+    jump	 : in std_logic;
+    zero  : in std_logic;
+    nz	 : in std_logic;  --not zero
+    gt	 : in std_logic;  --greater than
+    inst	 : out std_logic_vector(31 downto 0)
+);
+end IFU;
+
+architecture structural of IFU is
+
+  component pc is
+    port(clk : in std_logic; 
+			d   : in std_logic_vector(29 downto 0); 
+			q   : out std_logic_vector(29 downto 0)
+		  );
+  end component;
+  
+  component adder_30 is
+    port(x,y : in std_logic_vector(29 downto 0); 
+	      sum : out std_logic_vector(29 downto 0)
+		  );
+  end component;
+  
+  component SignalExt is
+    port(immed : in std_logic_vector(15 downto 0); 
+	      dout  : out std_logic_vector(29 downto 0)
+		  );
+  end component;
+  
+  component and_gate is
+    port(x,y   : in std_logic; 
+	      z     : out std_logic
+		  );
+  end component;
+  
+  component or_gate is
+    port(x,y   : in std_logic; 
+	      z     : out std_logic
+		  );
+  end component;
+  
+  component mux_30 is
+    port(sel       : in std_logic; 
+	      src0,src1 : in std_logic_vector(29 downto 0); 
+			z         : out std_logic_vector(29 downto 0)
+		  );
+  end component;
+  
+  component sram is
+    generic (mem_file: string);
+    port(cs,oe,we  : in std_logic; 
+	      addr, din : in std_logic_vector(31 downto 0); 
+			dout      : out std_logic_vector(31 downto 0)
+		   );
+  end component;
+  
+signal and3_temp		   : std_logic_vector(2 downto 0);
+signal and_temp,or_temp	: std_logic;
+signal pc_in : std_logic_vector(29 downto 0) := X"00400020";
+signal addr1_temp,ext_out_temp,addr2_temp,mux_temp,m_out : std_logic_vector(29 downto 0);
+signal s_temp,pc_out,inst_temp,jmp_temp : std_logic_vector(31 downto 0);
+
+begin
+
+  -- first uses the mux and pc to generate instructions for the sram -- 
+  mux_30_map : mux_30 port map(
+						       rst,
+							    m_out(29 downto 0),
+								 (20 => '1', 3 => '1', others => '0'),
+								 pc_in(29 downto 0)
+								 );
+						
+  pc_map  : pc port map(
+				     clk,
+					  pc_in(29 downto 0),
+					  pc_out(31 downto 2)
+					  );
+  pc_out(1 downto 0) <= "00";
+  
+  s_temp<=(0 => '1', others => '0');
+  
+  sram_port_map : sram generic map(mem_file => mem_file) 
+							  port map(
+								   '1',
+									'1',
+									'0',
+									pc_out(31 downto 0),
+									s_temp(31 downto 0),
+									inst_temp(31 downto 0)
+									);
+  -- moves the instruction from the output of the sram (inst_temp) to output inst -- 									
+  inst(31 downto 0) <= inst_temp(31 downto 0);
+  
+  -- output from pc and s_temp used to generate outputs for the mux through the addrs-- 
+  addr1_map : adder_30 port map(
+						pc_out(31 downto 2),
+						s_temp(29 downto 0),
+						addr1_temp(29 downto 0)
+						);
+						
+  signalext_map : SignalExt port map(
+						immed(15 downto 0),
+						ext_out_temp(29 downto 0)
+						);
+  						
+  addr2_map : adder_30 port map(
+						addr1_temp(29 downto 0),
+						ext_out_temp(29 downto 0),
+						addr2_temp(29 downto 0)
+						);
+
+  -- uses the branch input to assign the values of each of the bits of and3_temp by using 'and' on
+  -- zero, nz, and gt 						
+  and1_map : and_gate port map(
+						branch(2),
+						zero,
+						and3_temp(2)
+						);
+						
+  and2_map : and_gate port map(
+						branch(1),
+						nz,
+						and3_temp(1)
+						);
+						
+  and3_map : and_gate port map(
+						branch(0),
+						gt,
+						and3_temp(0)
+						);
+
+  -- Then the outputs of the and_gates were used to assign or_temp --  						
+  or1_map : or_gate port map(
+						and3_temp(2),
+						and3_temp(1),
+						or_temp
+						);
+  
+  -- And the outputs of the or_gate was used to assign and_temp --
+  or2_map : or_gate port map(
+						or_temp,
+						and3_temp(0),
+						and_temp
+						);
+
+  -- Result put into the mux to be put into the mux again for the output of mux2 -- 
+  mux1_map : mux_30 port map(
+						and_temp,
+						addr1_temp(29 downto 0),
+						addr2_temp(29 downto 0),
+						mux_temp(29 downto 0)
+						);
+	
+  -- First 4 bits of jmp from pc_out, next 26 bits from inst_temp -- 	
+  jmp_temp(29 downto 26) <= pc_out(31 downto 28);
+  jmp_temp(25 downto 0)  <= inst_temp(25 downto 0);
+  
+  -- Depending on jump, either mux_temp or jmp_temp is chosen -- 
+  mux2_map : mux_30 port map(
+						jump,
+						mux_temp(29 downto 0),
+						jmp_temp(29 downto 0),
+						m_out(29 downto 0)
+						);
+  
+end structural;
